@@ -268,6 +268,7 @@ def set_forward_context(
     slot_mapping: dict[str, torch.Tensor] | list[dict[str, torch.Tensor]] | None = None,
     skip_compiled: bool = False,
     is_padding: torch.Tensor | None = None,
+    forward_context_kwargs: dict[str, Any] | None = None,
 ):
     """A context manager that stores the current forward context,
     can be attention metadata, etc.
@@ -325,6 +326,8 @@ def set_forward_context(
         batch_descriptor=batch_descriptor,
         ubatch_slices=ubatch_slices,
     )
+    if forward_context_kwargs:
+        additional_kwargs.update(forward_context_kwargs)
 
     forward_context = create_forward_context(
         attn_metadata,

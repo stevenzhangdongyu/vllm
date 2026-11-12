@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -220,6 +221,15 @@ from vllm.v1.worker.dp_utils import coordinate_batch_across_dp
 from vllm.v1.worker.ec_connector_model_runner_mixin import ECConnectorModelRunnerMixin
 from vllm.v1.worker.gpu.attn_utils import _reshape_attention_kv_cache
 from vllm.v1.worker.gpu_input_batch import CachedRequestState, InputBatch
+from vllm.v1.worker.polar_path_context import (
+    build_request_context,
+    load_path_manifest,
+)
+from vllm.v1.worker.polar_layer_scheduler import (
+    dynamic_layer_schedule,
+    identical_path_schedule,
+    serial_schedule,
+)
 from vllm.v1.worker.gpu_ubatch_wrapper import UBatchWrapper
 from vllm.v1.worker.kv_connector_model_runner_mixin import KVConnectorModelRunnerMixin
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
@@ -3853,6 +3863,60 @@ class GPUModelRunner(
             **model_kwargs,
         )
 
+    def _get_polar_forward_context_kwargs(self) -> dict[str, Any] | None:
+        """Attach the active requests' layer paths when PoLar routing is enabled."""
+        manifest_path = os.environ.get("VLLM_POLAR_PATH_MANIFEST")
+        if not manifest_path:
+            return None
+        logger.warning_once(
+            "PoLar heterogeneous path execution is experimental: it requires the "
+            "PolarQwen2ForCausalLM architecture, FlashAttention, eager mode, and "
+            "text-only requests."
+        )
+
+        manifest = getattr(self, "_polar_path_manifest_entries", None)
+        if manifest is None:
+            manifest = load_path_manifest(manifest_path)
+            self._polar_path_manifest_entries = manifest
+            self._polar_path_manifest_filename = manifest_path
+            self._polar_path_cache = {}
+        elif self._polar_path_manifest_filename != manifest_path:
+            raise RuntimeError(
+                "VLLM_POLAR_PATH_MANIFEST changed after GPUModelRunner initialization"
+            )
+
+        request_ids = list(self.input_batch.req_ids)
+        request_context = build_request_context(
+            request_ids=request_ids,
+            requests=self.requests,
+            query_start_loc=self.query_start_loc.np,
+            manifest_entries=manifest,
+            path_cache=self._polar_path_cache,
+        )
+        if request_context is None:
+            return None
+
+        strategy = os.environ.get("VLLM_POLAR_SCHEDULER", "dynamic_layer").lower()
+        model_hf_config = self.model_config.hf_text_config
+        depth = getattr(model_hf_config, "num_hidden_layers", None)
+        if depth is None:
+            raise ValueError("PoLar path scheduling requires num_hidden_layers")
+        planners = {
+            "serial": serial_schedule,
+            "identical_path": identical_path_schedule,
+            "dynamic_layer": dynamic_layer_schedule,
+        }
+        planner = planners.get(strategy)
+        if planner is None:
+            raise ValueError(
+                "VLLM_POLAR_SCHEDULER must be serial, identical_path, or dynamic_layer"
+            )
+        request_context["polar_schedule_policy"] = strategy
+        request_context["polar_layer_batches"] = planner(
+            request_context["polar_paths"], depth
+        )
+        return request_context
+
     @staticmethod
     def _is_uniform_decode(
         max_num_scheduled_tokens: int,
@@ -4373,6 +4437,7 @@ class GPUModelRunner(
                 num_tokens_unpadded,
                 ubatch_slices_padded,
             )
+        polar_forward_context_kwargs = self._get_polar_forward_context_kwargs()
         with (
             set_forward_context(
                 attn_metadata,
@@ -4384,6 +4449,7 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
                 slot_mapping=slot_mappings,
                 skip_compiled=has_encoder_input,
+                forward_context_kwargs=polar_forward_context_kwargs,
             ),
             record_function_or_nullcontext("gpu_model_runner: forward"),
             self.maybe_get_kv_connector_output(
