@@ -22,13 +22,21 @@ def percentile(values: list[float], percentile_value: float) -> float | None:
     return ordered[position]
 
 
-def request_one(base_url: str, model: str, row: dict, max_tokens: int, temperature: float):
+def request_one(
+    base_url: str,
+    model: str,
+    row: dict,
+    max_tokens: int,
+    temperature: float,
+    ignore_eos: bool,
+):
     payload = json.dumps(
         {
             "model": model,
             "prompt": row["token_ids"],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "ignore_eos": ignore_eos,
             "stream": False,
         }
     ).encode("utf-8")
@@ -75,6 +83,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="0 means all prompts")
     parser.add_argument("--max-tokens", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--ignore-eos", action="store_true")
     args = parser.parse_args()
     if args.concurrency < 1 or args.max_tokens < 1:
         parser.error("--concurrency and --max-tokens must be positive")
@@ -112,6 +121,7 @@ def main() -> int:
                     row,
                     args.max_tokens,
                     args.temperature,
+                    args.ignore_eos,
                 )
                 for row in rows
             ]
@@ -142,6 +152,7 @@ def main() -> int:
         "concurrency": args.concurrency,
         "max_tokens": args.max_tokens,
         "temperature": args.temperature,
+        "ignore_eos": args.ignore_eos,
         "base_url": args.base_url,
         "model": args.model,
         "results_jsonl": str(results_path),
