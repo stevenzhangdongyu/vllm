@@ -69,7 +69,7 @@ def slice_flash_attention_metadata(
         )
     if metadata.use_cascade:
         raise ValueError("cascade attention is not supported by PoLar sub-batches")
-    if metadata.max_dcp_context_kv_len is not None:
+    if metadata.max_dcp_context_kv_len not in (None, 0):
         raise ValueError("decode-context parallel attention is not supported")
     if metadata.scheduler_metadata is not None:
         raise ValueError(
