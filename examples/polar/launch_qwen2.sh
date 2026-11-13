@@ -20,11 +20,16 @@ esac
 export CUDA_VISIBLE_DEVICES="$GPU_ID"
 export VLLM_POLAR_PATH_MANIFEST="$MANIFEST"
 export VLLM_POLAR_SCHEDULER="$STRATEGY"
+# The PoLar request-context hook is currently implemented in the V1 runner.
+export VLLM_USE_V2_MODEL_RUNNER=0
+
+echo "[polar] runner=V1 strategy=$STRATEGY manifest=$MANIFEST gpu=$GPU_ID"
 
 exec vllm serve "$MODEL_PATH" \
   --served-model-name polar-qwen \
   --tensor-parallel-size 1 \
   --pipeline-parallel-size 1 \
   --enforce-eager \
+  --no-enable-prefix-caching \
   --hf-overrides '{"architectures":["PolarQwen2ForCausalLM"]}' \
   --port "$PORT"
