@@ -52,3 +52,35 @@ def test_layer_plan_executes_and_scatters_in_path_order():
     assert calls == [(0, 0, 2), (0, 1, 1), (1, 1, 1)]
     assert torch.equal(result[:, 0], torch.tensor([3.0, 2.0]))
     assert residual is not None
+
+
+@pytest.mark.parametrize("cache_mode,expected_calls", [("execution", 5), ("layer", 4)])
+def test_cache_modes_preserve_loop_order_and_residuals(cache_mode, expected_calls):
+    """Mixed-depth visits merge only when their KV and residual semantics agree."""
+    from vllm.v1.worker.polar_layer_scheduler import dynamic_layer_schedule
+
+    calls = []
+    cache = {}
+
+    def forward(layer, position, requests, hidden, residual):
+        calls.append((layer, position, requests))
+        slot = layer if cache_mode == "layer" else position
+        for index, request in enumerate(requests):
+            cache[request, slot] = hidden[index].clone()
+        residual = hidden.clone() if residual is None else residual + 1
+        return hidden + layer + 1, residual
+
+    result, residual = execute_layer_batches(
+        torch.zeros(2, 1), None, (0, 1, 2),
+        dynamic_layer_schedule([[0, 1, 0, 2], [0, 2]], 3),
+        forward, cache_mode=cache_mode,
+    )
+    assert len(calls) == expected_calls
+    assert torch.equal(result[:, 0], torch.tensor([7., 4.]))
+    assert torch.equal(residual[:, 0], torch.tensor([3., 1.]))
+    if cache_mode == "layer":
+        assert cache[0, 0].item() == 3  # Repeat replaces the original value.
+        assert calls[-1][2] == (0, 1)
+    else:
+        assert cache[0, 0].item() == 0
+        assert cache[0, 2].item() == 3

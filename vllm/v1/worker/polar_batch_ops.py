@@ -137,22 +137,29 @@ def execute_layer_batches(
     query_start_loc: Sequence[int],
     batches: Sequence[LayerBatch],
     layer_forward,
+    cache_mode: str = "execution",
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Execute a layer plan over packed request tokens using an eager callback.
 
-    ``layer_forward`` receives ``(physical_layer, execution_index, hidden,
-    residual)`` and returns the updated hidden/residual pair. Batches containing
-    requests at different path positions are split so each callback has one KV
-    execution index.
+    The callback receives physical layer, representative execution index,
+    request indices, hidden, and residual. Execution mode splits by position;
+    layer mode merges positions but keeps first visits separate for residuals.
     """
+    if cache_mode not in {"layer", "execution"}:
+        raise ValueError("cache_mode must be layer or execution")
     for batch in batches:
-        by_execution_index: dict[int, list[int]] = {}
+        groups: dict[tuple[int, bool], list[tuple[int, int]]] = {}
         for request_idx, execution_idx in zip(
             batch.request_indices, batch.execution_indices
         ):
-            by_execution_index.setdefault(execution_idx, []).append(request_idx)
+            slot_idx = execution_idx if cache_mode == "execution" else batch.layer_idx
+            groups.setdefault((slot_idx, execution_idx == 0), []).append(
+                (request_idx, execution_idx)
+            )
 
-        for execution_idx, request_indices in by_execution_index.items():
+        for members in groups.values():
+            execution_idx = members[0][1]
+            request_indices = [member[0] for member in members]
             selected_hidden, token_indices = gather_request_tokens(
                 hidden_states, query_start_loc, request_indices
             )

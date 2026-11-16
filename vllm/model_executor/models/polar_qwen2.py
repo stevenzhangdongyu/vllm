@@ -56,13 +56,18 @@ def _attention_subbatch_context(forward_context, slot_name: str, query_offsets, 
 
 
 class PolarQwen2Model(Qwen2Model):
-    """Runs each request's path with per-execution-position KV isolation."""
+    """Runs paths with independent execution KV or physical-layer overwrite KV."""
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         if get_pp_group().world_size != 1:
             raise ValueError("Experimental PoLar Qwen2 executor requires pipeline parallelism 1")
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         self.polar_depth = self.config.num_hidden_layers
+        self.polar_cache_mode = os.environ.get(
+            "VLLM_POLAR_KV_CACHE_MODE", "execution"
+        ).lower()
+        if self.polar_cache_mode not in {"layer", "execution"}:
+            raise ValueError("VLLM_POLAR_KV_CACHE_MODE must be layer or execution")
         manifest_path = os.environ.get("VLLM_POLAR_PATH_MANIFEST")
         if not manifest_path:
             raise ValueError("Set VLLM_POLAR_PATH_MANIFEST before loading PoLar Qwen2")
@@ -83,7 +88,9 @@ class PolarQwen2Model(Qwen2Model):
         self.polar_max_visits = max(map(len, paths))
         self.polar_extra_kv_slots = nn.ModuleList()
         source_attention = self.layers[0].self_attn
-        for slot_idx in range(self.polar_depth, self.polar_max_visits):
+        slot_count = (self.polar_max_visits if self.polar_cache_mode == "execution"
+                      else self.polar_depth)
+        for slot_idx in range(self.polar_depth, slot_count):
             slot = Qwen2Attention(
                 hidden_size=source_attention.hidden_size,
                 num_heads=source_attention.total_num_heads,
@@ -165,7 +172,8 @@ class PolarQwen2Model(Qwen2Model):
         ):
             physical_layer = self.layers[layer_idx]
             physical_attention = physical_layer.self_attn.attn
-            slot_name = self.polar_kv_slot_names[execution_idx]
+            slot_idx = execution_idx if self.polar_cache_mode == "execution" else layer_idx
+            slot_name = self.polar_kv_slot_names[slot_idx]
             old_layer_name = physical_attention.layer_name
             token_indices = request_token_indices(
                 query_offsets, request_indices, positions.device
@@ -188,6 +196,7 @@ class PolarQwen2Model(Qwen2Model):
             query_offsets,
             batches,
             run_physical_layer,
+            cache_mode=self.polar_cache_mode,
         )
         hidden_states, _ = self.norm(hidden_states, residual)
         return hidden_states

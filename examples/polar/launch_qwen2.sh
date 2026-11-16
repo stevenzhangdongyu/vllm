@@ -20,6 +20,8 @@ esac
 export CUDA_VISIBLE_DEVICES="$GPU_ID"
 export VLLM_POLAR_PATH_MANIFEST="$MANIFEST"
 export VLLM_POLAR_SCHEDULER="$STRATEGY"
+export VLLM_POLAR_KV_CACHE_MODE="${VLLM_POLAR_KV_CACHE_MODE:-execution}"
+export VLLM_PLUGINS=""
 # The PoLar request-context hook is currently implemented in the V1 runner.
 export VLLM_USE_V2_MODEL_RUNNER=0
 
