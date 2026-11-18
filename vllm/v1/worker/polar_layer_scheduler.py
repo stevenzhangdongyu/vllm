@@ -6,6 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Sequence
 
+from vllm.v1.worker.polar_profile import polar_profile
+
 
 @dataclass(frozen=True)
 class LayerBatch:
@@ -27,6 +29,7 @@ def validate_paths(paths: Sequence[Sequence[int]], depth: int) -> list[tuple[int
     return result
 
 
+@polar_profile("polar/plan/serial")
 def serial_schedule(paths: Sequence[Sequence[int]], depth: int) -> list[LayerBatch]:
     normalized = validate_paths(paths, depth)
     return [
@@ -36,6 +39,7 @@ def serial_schedule(paths: Sequence[Sequence[int]], depth: int) -> list[LayerBat
     ]
 
 
+@polar_profile("polar/plan/identical_path")
 def identical_path_schedule(
     paths: Sequence[Sequence[int]], depth: int
 ) -> list[LayerBatch]:
@@ -50,6 +54,7 @@ def identical_path_schedule(
     ]
 
 
+@polar_profile("polar/plan/dynamic_layer")
 def dynamic_layer_schedule(
     paths: Sequence[Sequence[int]], depth: int
 ) -> list[LayerBatch]:

@@ -8,6 +8,7 @@ from dataclasses import replace
 import torch
 
 from vllm.v1.worker.polar_layer_scheduler import LayerBatch
+from vllm.v1.worker.polar_profile import polar_profile, polar_range
 
 
 def request_token_indices(
@@ -28,6 +29,7 @@ def request_token_indices(
     return torch.tensor(indices, dtype=torch.long, device=device)
 
 
+@polar_profile("polar/gather")
 def gather_request_tokens(
     packed: torch.Tensor,
     query_start_loc: Sequence[int],
@@ -40,6 +42,7 @@ def gather_request_tokens(
     return packed.index_select(0, indices), indices
 
 
+@polar_profile("polar/scatter")
 def scatter_request_tokens_(
     packed: torch.Tensor, values: torch.Tensor, token_indices: torch.Tensor
 ) -> torch.Tensor:
@@ -52,6 +55,7 @@ def scatter_request_tokens_(
     return packed
 
 
+@polar_profile("polar/attention_metadata")
 def slice_flash_attention_metadata(
     metadata,
     query_start_loc: Sequence[int],
@@ -131,6 +135,7 @@ def slice_flash_attention_metadata(
     )
 
 
+@polar_profile("polar/execute_plan")
 def execute_layer_batches(
     hidden_states: torch.Tensor,
     residual: torch.Tensor | None,
@@ -172,13 +177,16 @@ def execute_layer_batches(
                 selected_residual, _ = gather_request_tokens(
                     residual, query_start_loc, request_indices
                 )
-            next_hidden, next_residual = layer_forward(
-                batch.layer_idx,
-                execution_idx,
-                tuple(request_indices),
-                selected_hidden,
-                selected_residual,
-            )
+            with polar_range(
+                f"polar/layer_{batch.layer_idx}/requests_{len(request_indices)}"
+            ):
+                next_hidden, next_residual = layer_forward(
+                    batch.layer_idx,
+                    execution_idx,
+                    tuple(request_indices),
+                    selected_hidden,
+                    selected_residual,
+                )
             if next_hidden.shape != selected_hidden.shape:
                 raise ValueError("layer callback changed the selected hidden shape")
             if next_residual is None:
